@@ -45,8 +45,8 @@ The main goal is not just to make the code run. The goal is to improve agent beh
 Create a `.env` file:
 
 ```bash
-GOOGLE_API_KEY=...
-LLM_MODEL=gemini-2.5-flash
+OPENAI_API_KEY=...
+LLM_MODEL=gpt-4o
 ```
 
 Optional local model:
@@ -61,13 +61,13 @@ OLLAMA_BASE_URL=http://localhost:11434
 Run the weak baseline:
 
 ```bash
-python grade/scoring.py --module simple_solution.agent.graph --provider google
+python grade/scoring.py --module simple_solution.agent.graph --provider openai
 ```
 
 Run your implementation:
 
 ```bash
-python grade/scoring.py --module src.agent.graph --provider google
+python grade/scoring.py --module src.agent.graph --provider openai
 ```
 
 Run tests:

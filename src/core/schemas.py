@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProductRecord(BaseModel):
@@ -84,10 +84,12 @@ class ToolCallRecord(BaseModel):
 
 
 class AgentResult(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     query: str
     final_answer: str
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
-    provider: str = "google"
+    provider: str = "openai"
     model_name: str | None = None
     saved_order: dict[str, Any] | None = None
     saved_order_path: str | None = None

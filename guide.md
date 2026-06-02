@@ -5,7 +5,7 @@
 Run the weak baseline first:
 
 ```bash
-python grade/scoring.py --module simple_solution.agent.graph --provider google
+python grade/scoring.py --module simple_solution.agent.graph --provider openai
 ```
 
 This gives you the starting score. Your job is to improve `src/` and beat it.
@@ -105,5 +105,5 @@ Use this loop:
 Run your implementation with:
 
 ```bash
-python grade/scoring.py --module src.agent.graph --provider google
+python grade/scoring.py --module src.agent.graph --provider openai
 ```

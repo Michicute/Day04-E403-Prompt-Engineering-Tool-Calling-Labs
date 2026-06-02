@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Any
 
 from dotenv import load_dotenv
@@ -28,10 +29,18 @@ def normalize_content(raw: Any) -> str:
 
 def build_chat_model(
     *,
-    provider: str = "google",
+    provider: str = "openai",
     model_name: str | None = None,
     temperature: float = 0.0,
 ):
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model_name or os.getenv("LLM_MODEL", "gpt-4o"),
+            temperature=temperature,
+            api_key=os.getenv("OPENAI_API_KEY"),
+        )
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -48,7 +57,7 @@ def build_chat_model(
             base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             temperature=temperature,
         )
-    raise ValueError("This lab supports only the `google` and `ollama` providers.")
+    raise ValueError("This lab supports only the `openai`, `google`, and `ollama` providers.")
 
 
 def extract_json_object(raw: Any) -> dict[str, Any]:
@@ -89,10 +98,28 @@ User query:
 Student answer:
 {answer}
 """.strip()
-    payload = extract_json_object(model.invoke(prompt).content)
+    payload = extract_json_object(_invoke_model_with_retries(model, prompt).content)
     score = max(0, min(10, int(payload.get("score", 0))))
     return {
         "score": score,
         "verdict": str(payload.get("verdict", "")).strip(),
         "feedback": [str(item).strip() for item in payload.get("feedback", []) if str(item).strip()],
     }
+
+
+def _invoke_model_with_retries(model, prompt: str):
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            return model.invoke(prompt)
+        except Exception as exc:
+            last_error = exc
+            if not _is_rate_limit_error(exc) or attempt == 4:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    raise last_error or RuntimeError("Model invocation failed.")
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "ratelimit" in text or "rate limit" in text or "429" in text
