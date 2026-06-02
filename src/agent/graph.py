@@ -36,14 +36,19 @@ Bạn là trợ lý tạo đơn hàng cho cửa hàng điện tử. Hôm nay là
 
 Luôn trả lời cuối cùng bằng tiếng Việt, ngắn gọn, dựa trên dữ liệu tool.
 
-Trước khi gọi bất kỳ tool nào, kiểm tra yêu cầu đã có đủ:
+Phân biệt hai loại yêu cầu:
+- Tư vấn/tìm kiếm/so sánh sản phẩm: được gọi list_products và get_product_details để tư vấn dựa trên catalog, không cần tên, số điện thoại, email hay địa chỉ.
+- Tạo/lưu/chốt đơn hàng: chỉ lúc này mới cần đầy đủ thông tin khách hàng và quy trình lưu đơn.
+
+Trước khi tạo/lưu/chốt đơn hàng, kiểm tra yêu cầu đã có đủ:
 - tên khách hàng
 - số điện thoại
 - email
 - địa chỉ giao hàng
 - ít nhất một sản phẩm kèm số lượng
 
-Nếu thiếu bất kỳ thông tin nào, hãy hỏi bổ sung đúng thông tin còn thiếu rồi dừng, không gọi tool.
+Nếu yêu cầu tạo/lưu/chốt đơn hàng mà thiếu bất kỳ thông tin nào, hãy hỏi bổ sung đúng thông tin còn thiếu rồi dừng, không gọi tool tạo đơn.
+Nếu người dùng chỉ muốn được tư vấn trước, hãy dùng catalog tool để tư vấn sản phẩm phù hợp; không gọi get_discount, calculate_order_totals hoặc save_order.
 
 Từ chối ngay và không gọi tool nếu người dùng yêu cầu:
 - tạo hóa đơn giả
@@ -65,6 +70,7 @@ Quy tắc nền tảng:
 - Nếu get_product_details hoặc calculate_order_totals báo lỗi, dừng và giải thích ngắn gọn; không save_order.
 - Nếu thiếu hàng, nêu sản phẩm thiếu và số lượng tồn khả dụng; không lưu đơn.
 - Sau khi lưu thành công, xác nhận ngắn gọn gồm order_id, campaign_code/discount, final_total VND, và path đã lưu.
+- Với yêu cầu tư vấn, trả lời bằng vài lựa chọn phù hợp, nêu product_id/tên/lý do chọn từ tool output, rồi hỏi người dùng muốn chốt món nào.
 """.strip()
 
 
@@ -183,6 +189,17 @@ def run_agent(
             saved_order_path=None,
         )
 
+    advice_result = _run_deterministic_advice(
+        query=query,
+        provider=provider,
+        model_name=model_name,
+        data_dir=data_dir,
+        output_dir=output_dir,
+        today=today,
+    )
+    if advice_result is not None:
+        return advice_result
+
     deterministic_result = _run_deterministic_order(
         query=query,
         provider=provider,
@@ -290,6 +307,9 @@ def _build_preflight_answer(query: str) -> str:
             "bỏ qua tồn kho hoặc bỏ qua catalog/policy. Tôi chỉ có thể tạo đơn dựa trên dữ liệu hợp lệ từ hệ thống."
         )
 
+    if not _is_order_creation_request(normalized):
+        return ""
+
     missing: list[str] = []
     if not re.search(r"[\w.+-]+@[\w.-]+\.\w+", query):
         missing.append("email")
@@ -310,6 +330,35 @@ def _normalize_for_preflight(text: str) -> str:
     stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     stripped = stripped.replace("đ", "d").replace("Đ", "D")
     return " ".join(stripped.lower().split())
+
+
+def _is_order_creation_request(normalized_query: str) -> bool:
+    advice_markers = [
+        "tu van",
+        "goi y",
+        "de xuat",
+        "recommend",
+        "so sanh",
+        "nen mua",
+        "tim san pham",
+        "xem san pham",
+        "tham khao",
+    ]
+    order_markers = [
+        "tao don",
+        "luu don",
+        "dat hang",
+        "chot",
+        "create order",
+        "save order",
+        "order giup",
+        "len don",
+    ]
+    if any(marker in normalized_query for marker in advice_markers):
+        return any(marker in normalized_query for marker in order_markers) and any(
+            marker in normalized_query for marker in ["luu", "chot", "tao don", "dat hang", "len don"]
+        )
+    return any(marker in normalized_query for marker in order_markers)
 
 
 def _invoke_with_retries(agent, payload: dict[str, Any]):
@@ -456,6 +505,141 @@ def _run_deterministic_order(
         saved_order=saved_order,
         saved_order_path=save_payload.get("path"),
     )
+
+
+def _run_deterministic_advice(
+    *,
+    query: str,
+    provider: str,
+    model_name: str | None,
+    data_dir: Path | None,
+    output_dir: Path | None,
+    today: str | None,
+) -> AgentResult | None:
+    normalized = _normalize_for_preflight(query)
+    if _is_order_creation_request(normalized) or not _is_product_advice_request(normalized):
+        return None
+
+    store = OrderDataStore(data_dir or DEFAULT_DATA_DIR, output_dir or DEFAULT_OUTPUT_DIR, today=today)
+    category = _infer_category(normalized)
+    max_unit_price = _infer_budget_vnd(normalized)
+    required_tags = _infer_required_tags(normalized)
+    list_payload = store.list_products(
+        query=query,
+        category=category,
+        max_unit_price=max_unit_price,
+        required_tags=required_tags,
+        in_stock_only=True,
+        limit=5,
+    )
+    list_record = ToolCallRecord(
+        name="list_products",
+        args={
+            "query": query,
+            "category": category,
+            "max_unit_price": max_unit_price,
+            "required_tags": required_tags,
+            "in_stock_only": True,
+            "limit": 5,
+        },
+        output=json.dumps(list_payload, ensure_ascii=False),
+    )
+
+    product_ids = [item["product_id"] for item in list_payload[:3]]
+    tool_calls = [list_record]
+    details_payload: dict[str, Any] = {"items": []}
+    if product_ids:
+        details_payload = store.get_product_details(product_ids)
+        tool_calls.append(
+            ToolCallRecord(
+                name="get_product_details",
+                args={"product_ids": product_ids},
+                output=json.dumps(details_payload, ensure_ascii=False),
+            )
+        )
+
+    items = [item for item in details_payload.get("items", []) if item.get("status") == "ok"]
+    if not items:
+        final_answer = "Mình chưa tìm thấy sản phẩm phù hợp trong catalog. Bạn có thể nói rõ nhu cầu, ngân sách hoặc loại sản phẩm hơn."
+    else:
+        lines = []
+        for item in items:
+            price = int(item["unit_price"])
+            lines.append(
+                f"- {item['product_id']} - {item['name']}: {price:,} VND, còn {item['stock']} chiếc; "
+                f"phù hợp nhóm {', '.join(item.get('tags', [])[:3])}."
+            )
+        final_answer = (
+            "Mình gợi ý các lựa chọn sau từ catalog:\n"
+            + "\n".join(lines)
+            + "\nBạn muốn chốt sản phẩm nào thì gửi thêm số lượng và thông tin giao hàng để mình tạo đơn."
+        )
+
+    return AgentResult(
+        query=query,
+        final_answer=final_answer,
+        tool_calls=tool_calls,
+        provider=provider,
+        model_name=model_name,
+        saved_order=None,
+        saved_order_path=None,
+    )
+
+
+def _is_product_advice_request(normalized_query: str) -> bool:
+    advice_markers = [
+        "tu van",
+        "goi y",
+        "de xuat",
+        "recommend",
+        "so sanh",
+        "nen mua",
+        "tim san pham",
+        "xem san pham",
+        "tham khao",
+    ]
+    return any(marker in normalized_query for marker in advice_markers)
+
+
+def _infer_category(normalized_query: str) -> str | None:
+    category_markers = {
+        "laptop": ["laptop", "notebook", "may tinh xach tay"],
+        "monitor": ["monitor", "man hinh", "screen"],
+        "mouse": ["mouse", "chuot"],
+        "keyboard": ["keyboard", "ban phim"],
+        "headphone": ["headphone", "tai nghe"],
+        "dock": ["dock", "usb c dock"],
+        "storage": ["storage", "ssd", "o cung"],
+        "stand": ["stand", "gia do"],
+        "webcam": ["webcam", "camera"],
+    }
+    for category, markers in category_markers.items():
+        if any(marker in normalized_query for marker in markers):
+            return category
+    return None
+
+
+def _infer_budget_vnd(normalized_query: str) -> int | None:
+    match = re.search(r"(?:duoi|toi da|tam|khoang)\s*(\d+)\s*(?:trieu|m)", normalized_query)
+    if match:
+        return int(match.group(1)) * 1_000_000
+    return None
+
+
+def _infer_required_tags(normalized_query: str) -> list[str]:
+    tags: list[str] = []
+    tag_markers = {
+        "office": ["van phong", "office", "lam viec"],
+        "gaming": ["gaming", "choi game", "game"],
+        "creator": ["creator", "sang tao", "edit", "dung phim", "thiet ke"],
+        "wireless": ["wireless", "khong day"],
+        "budget": ["gia re", "tiet kiem", "budget"],
+        "premium": ["cao cap", "premium"],
+    }
+    for tag, markers in tag_markers.items():
+        if any(marker in normalized_query for marker in markers):
+            tags.append(tag)
+    return tags
 
 
 def _extract_customer(query: str) -> dict[str, str] | None:

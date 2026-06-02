@@ -70,6 +70,12 @@ Run your implementation:
 python grade/scoring.py --module src.agent.graph --provider openai
 ```
 
+Run the Streamlit demo:
+
+```bash
+streamlit run streamlit_app.py
+```
+
 Run tests:
 
 ```bash
